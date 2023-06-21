@@ -17,7 +17,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 from torch import nn
 from tqdm import tqdm
 
-from data import Case3D
+from utils.data import Case3D
 from model import LUNAR
 
 parser = argparse.ArgumentParser()

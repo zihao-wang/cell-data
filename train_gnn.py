@@ -1,7 +1,6 @@
 import argparse
 from random import shuffle
 import os
-import logging
 import pickle
 
 import numpy as np
@@ -10,27 +9,29 @@ import torch
 from sklearn.metrics import roc_auc_score, roc_curve
 from torch import nn
 from tqdm import tqdm
+from torch_geometric.loader import DataLoader
 
-from data import Case3D
+from utils.data import Case3D
 from model import LUNAR
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--k', type=int, default=100)
 parser.add_argument('--steps', type=int, default=1)
+parser.add_argument('--batch_size', type=int, default=8)
 parser.add_argument('--device', type=str, default='cuda:0')
 parser.add_argument('--pretrain', type=str, default=None)
 
-parser.add_argument('--lr', type=float, default=0.001)
-parser.add_argument('--epochs', type=int, default=5)
+parser.add_argument('--lr', type=float, default=0.0001)
+parser.add_argument('--epochs', type=int, default=100)
 
-parser.add_argument('--eval_every', type=int, default=1)
-parser.add_argument('--save_every', type=int, default=1)
+parser.add_argument('--eval_every', type=int, default=5)
+parser.add_argument('--save_every', type=int, default=5)
 
 parser.add_argument('--save_dir', type=str, default='checkpoints')
-parser.add_argument('--data_dir', type=str, default='data/simulated_data')
+parser.add_argument('--data_dir', type=str, default='data/synthetic')
 
-parser.add_argument('--train_ratio', type=float, default=0.0)
-parser.add_argument('--val_ratio', type=float, default=0.2)
+parser.add_argument('--train_ratio', type=float, default=0.33)
+parser.add_argument('--val_ratio', type=float, default=0.33)
 
 parser.add_argument('--seed', type=int, default=42)
 parser.add_argument('--debug', action='store_true')
@@ -44,6 +45,7 @@ def seed_everything(seed):
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
 
+
 def plot_multiple_roc_curves(predict_list, target_list, save_file=None):
     plt.figure()
     for plist, tlist in zip(predict_list, target_list):
@@ -56,7 +58,6 @@ def plot_multiple_roc_curves(predict_list, target_list, save_file=None):
 
 
 def train_step_on_case3d(case3d_graph, model, optimizer, criterion):
-
     model.train()
     case3d_graph.to(args.device)
 
@@ -88,14 +89,12 @@ def eval_on_case3d(case3d_graph, model, criterion):
                 "pred_list": predict, 'true_list': target}
 
 
-def train_epoch(e, cases, model, optimizer, criterion, steps=3):
+def train_epoch(e, train_loader, model, optimizer, criterion):
     total_loss,  total_roc_auc = 0, 0
     roc_auc_score_list = []
-    shuffle(cases)
-    with tqdm(cases, desc=f"train epoch {e}, each case step {steps}") as t:
-        for i, c in enumerate(t):
-            for s in range(steps):
-                output = train_step_on_case3d(c.get_graph(model.k), model, optimizer, criterion)
+    with tqdm(train_loader, desc=f"train epoch {e}") as t:
+        for i, batch in enumerate(t):
+            output = train_step_on_case3d(batch, model, optimizer, criterion)
             total_loss += output['loss']
             total_roc_auc += output['roc_auc']
             roc_auc_score_list.append(output['roc_auc'])
@@ -105,8 +104,9 @@ def train_epoch(e, cases, model, optimizer, criterion, steps=3):
                        'roc_auc_05': np.quantile(roc_auc_score_list, 0.05)}
             t.set_postfix(postfix)
             # print(compute_accuracy(target_list, predict_list))
-    return {'ave_loss': total_loss / len(cases),
-            'ave_roc_auc': total_roc_auc / len(cases)}
+    return {'ave_loss': total_loss / len(train_loader),
+            'ave_roc_auc': total_roc_auc / len(train_loader)}
+
 
 def evaluate(cases, model, criterion):
     total_loss,  total_roc_auc = 0, 0
@@ -130,8 +130,8 @@ def evaluate(cases, model, criterion):
 
 
 if __name__ == "__main__":
-    args = parser.parse_args()
 
+    args = parser.parse_args()
     seed_everything(args.seed)
 
     # prerare dataset
@@ -142,7 +142,7 @@ if __name__ == "__main__":
     # else, create from scratch
     else:
         collection_of_cases = []
-        for file in tqdm(os.listdir(args.data_dir)):
+        for file in tqdm(os.listdir(args.data_dir), desc="loading cases"):
             if file.endswith(".3d"):
                 collection_of_cases.append(
                     Case3D(os.path.join(args.data_dir, file))
@@ -157,12 +157,21 @@ if __name__ == "__main__":
     valid_num = int(total_num * args.val_ratio)
 
     train_cases = collection_of_cases[:train_num]
-    valid_cases = collection_of_cases[train_num :train_num+valid_num]
+    valid_cases = collection_of_cases[train_num: train_num+valid_num]
     test_cases  = collection_of_cases[train_num+valid_num:]
 
     print("number of training case", len(train_cases))
     print("number of validation case", len(valid_cases))
     print("number of testing case", len(test_cases))
+
+    train_graphs = []
+    for c in tqdm(train_cases):
+        print(c.filename)
+        train_graphs.append(c.get_graph(args.k).to(args.device))
+
+    train_loader = DataLoader(train_graphs, batch_size=args.batch_size, shuffle=True)
+
+    print("prepare train loader")
 
     model = LUNAR(args.k)
 
@@ -176,7 +185,7 @@ if __name__ == "__main__":
     optimizer = torch.optim.Adam(model.parameters(),
                                  lr=args.lr,
                                  weight_decay=args.weight_decay)
-    criterion = nn.MSELoss()
+    criterion = nn.MSELoss(reduction='mean')
 
     print("on valid cases")
     pred_list, targ_list = evaluate(valid_cases, model, criterion)
@@ -193,7 +202,7 @@ if __name__ == "__main__":
 
     for e in range(1, args.epochs + 1):
         print("epoch", e)
-        train_epoch(e, train_cases, model, optimizer, criterion, steps=args.steps)
+        train_epoch(e, train_loader, model, optimizer, criterion)
         if e % args.eval_every == 0:
             print("on valid cases")
             pred_list, targ_list = evaluate(valid_cases, model, criterion)

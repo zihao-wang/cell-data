@@ -61,3 +61,4 @@ class Case3D():
         edge_attr = torch.tensor(flat_dist.reshape(-1, 1))
 
         return Data(x, edge_index, edge_attr, y)
+
