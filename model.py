@@ -37,12 +37,12 @@ class LunarLayer(MessagePassing):
 
 
 class LUNAR(torch.nn.Module):
-    def __init__(self, k):
+    def __init__(self, k=100):
         super(LUNAR, self).__init__()
         self.k = k
         self.L1 = LunarLayer(self.k)
 
-    def forward(self,data):
+    def forward(self, data):
         self.edge_attr = data.edge_attr
         self.edge_index = data.edge_index
         self.x = data.x
