@@ -1,5 +1,7 @@
-data
-checkpoints
+# data
+data/synthetic
+# checkpoints
+**/*.3d
 output
 **/__pycache__
 **/.ipynb_checkpoints
